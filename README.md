@@ -119,6 +119,8 @@ them as indicative. Details: [`results/results.md`](results/results.md).
 
 ## Results
 
+Machine-readable copies of the result tables: https://huggingface.co/datasets/ProprietaryLegal/pli-local-llm-serving-results
+
 - [`results/results.md`](results/results.md): all tables, with what each number means.
 - [`results/glm53-speed.csv`](results/glm53-speed.csv),
   [`results/glm53-numerical.csv`](results/glm53-numerical.csv),
