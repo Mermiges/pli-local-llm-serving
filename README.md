@@ -195,8 +195,12 @@ More rows and the numbers behind them: [`results/results.md`](results/results.md
 
 ## Upstream reports
 
-We are reporting the reproducible problems we hit to the projects concerned, with logs and
-patches. Links will be added here once they are posted.
+We reported the reproducible problems we hit to the projects concerned, with logs and patches:
+
+- CUDA illegal memory access (Xid 31) in `MUL_MAT_ID` MMQ on the DeepSeek V4.1 branch (fixed on master by #29953): https://github.com/ggml-org/llama.cpp/pull/28696#issuecomment-6103436891
+- Test report for the glm5-next DFlash hook (PR #30268, issue #30093): https://github.com/ggml-org/llama.cpp/pull/30268#issuecomment-6103437043
+- glm-flash-lite `fast` mode run-to-run greedy differences, plus perplexity data: https://github.com/sybil-solutions/glm-flash-lite/issues/15
+- test-chat GLM-4.7-Flash "throw path" test fails with `--template GLM`: https://github.com/ggml-org/llama.cpp/issues/30313
 
 ## Licence
 
