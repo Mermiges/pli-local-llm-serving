@@ -1,0 +1,42 @@
+From: Nick Mermiges <Mermiges@users.noreply.github.com>
+Subject: [PATCH] glm5next: load mainline-converted GLM-5.3-Flash GGUFs (arch "glm5-next", pre-tokenizer "glm5")
+
+Applies to noonghunna/llama.cpp stack/club3090-moecachev1.6 (d9cc8af98559). Renames the
+architecture string to the mainline "glm5-next" (old "glm5next" files then no longer load) and maps
+the "glm5" pre-tokenizer to the existing ChatGLM4 path with ignore_merges, as mainline does.
+This was enough to load and run AesSedai/GLM-5.3-Flash-GGUF for our tests. It does not add
+glm5next.expert_shared_feed_forward_length, which club-3090 PR #1605 notes the engine expects.
+---
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index e910a7f..f7c1690 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -84,7 +84,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+     { LLM_ARCH_GLM4,             "glm4"             },
+     { LLM_ARCH_GLM4_MOE,         "glm4moe"          },
+     { LLM_ARCH_GLM_DSA,          "glm-dsa"          },
+-    { LLM_ARCH_GLM5NEXT,         "glm5next"         },
++    { LLM_ARCH_GLM5NEXT,         "glm5-next"        },
+     { LLM_ARCH_BITNET,           "bitnet"           },
+     { LLM_ARCH_T5,               "t5"               },
+     { LLM_ARCH_T5ENCODER,        "t5encoder"        },
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index dd6e4e5..e372807 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -2260,13 +2260,14 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+                 clean_spaces = false;
+             } else if (
+                 tokenizer_pre == "glm4" ||
++                tokenizer_pre == "glm5" ||
+                 tokenizer_pre == "chatglm-bpe") {
+                 pre_type = LLAMA_VOCAB_PRE_TYPE_CHATGLM4;
+                 special_bos_id = LLAMA_TOKEN_NULL;
+                 // glm4 tokenizer.json sets "ignore_merges": true; without it greedy BPE cannot
+                 // reach some vocab entries, inflating mixed Chinese-English ~13%. chatglm-bpe
+                 // shares this pre_type but is ChatGLM3 and not confirmed to declare the flag
+-                if (tokenizer_pre == "glm4") {
++                if (tokenizer_pre == "glm4" || tokenizer_pre == "glm5") {
+                     ignore_merges = true;
+                 }
+             } else if (

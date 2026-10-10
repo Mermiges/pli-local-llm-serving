@@ -1,0 +1,373 @@
+From c1653578162c629bb3f3b2b50465b271499c91f8 Mon Sep 17 00:00:00 2001
+From: Nick Mermiges <Mermiges@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 02:02:08 +0000
+Subject: [PATCH 1/2] chat: parse DeepSeek V4.1 DSML tool calls and mark
+ message starts
+
+V4.1 writes '<DSML calls>' / '<DSML invoke' / '<DSML parameter' with a space after
+the DSML token; the V4 parser looked for '<DSML tool_calls>' so V4.1 tool calls came
+back as plain content. Detect V4.1 from the template and build the tags with the
+space. Also give the parser user/assistant message delimiters so the server can
+place context checkpoints at turn starts.
+
+Adds the V4.1 template (from the DeepSeek-V4.1-Flash GGUF) and test-chat cases.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+(cherry picked from commit 5d4575afee2ede39864bac976ad90e813c50447d)
+---
+ common/chat.cpp                               |   2 +-
+ common/parsers/deepseek.cpp                   |  23 ++-
+ .../deepseek-ai-DeepSeek-V4.1-Flash.jinja     | 156 ++++++++++++++++++
+ tests/test-chat.cpp                           |  82 +++++++++
+ 4 files changed, 255 insertions(+), 8 deletions(-)
+ create mode 100644 models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja
+
+diff --git a/common/chat.cpp b/common/chat.cpp
+index faf27f786..feea97298 100644
+--- a/common/chat.cpp
++++ b/common/chat.cpp
+@@ -1163,7 +1163,7 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
+ 
+     // DeepSeek V3.2/V4 format detection: template defines dsml_token and uses it for tool calls.
+     // The template source contains the token as a variable assignment, not as a literal in markup.
+-    // V3.2 names the tool call block "function_calls", V4 names it "tool_calls".
++    // V3.2 names the tool call block "function_calls", V4 names it "tool_calls", V4.1 "calls" (its template still reads message tool_calls).
+     if (src.find("dsml_token") != std::string::npos &&
+         src.find("DSML") != std::string::npos &&
+         (src.find("function_calls") != std::string::npos ||
+diff --git a/common/parsers/deepseek.cpp b/common/parsers/deepseek.cpp
+index 5e2581727..259f9bc98 100644
+--- a/common/parsers/deepseek.cpp
++++ b/common/parsers/deepseek.cpp
+@@ -75,6 +75,9 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
+     // non-thinking generation prompt ends with a bare </think> instead of an empty
+     // <think></think> pair.
+     const bool is_v4 = tmpl.source().find("function_calls") == std::string::npos;
++    // V4.1 puts a space after the DSML token and names the block "calls":
++    // <DSML calls>, <DSML invoke name=...>, <DSML parameter name=...>.
++    const bool is_v41 = is_v4 && tmpl.source().find("dsml_token + ' calls>") != std::string::npos;
+ 
+     std::optional<json> adjusted_messages;
+     if (is_v4) {
+@@ -94,13 +97,14 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
+     const std::string DSML         = "｜DSML｜";
+     const std::string THINK_START  = "<think>";
+     const std::string THINK_END    = "</think>";
+-    const std::string TC_BLOCK     = is_v4 ? "tool_calls" : "function_calls";
+-    const std::string FC_START     = "<" + DSML + TC_BLOCK + ">";
+-    const std::string FC_END       = "</" + DSML + TC_BLOCK + ">";
+-    const std::string INVOKE_START = "<" + DSML + "invoke";
+-    const std::string INVOKE_END   = "</" + DSML + "invoke>";
+-    const std::string PARAM_START  = "<" + DSML + "parameter";
+-    const std::string PARAM_END    = "</" + DSML + "parameter>";
++    const std::string TAG          = DSML + (is_v41 ? " " : "");
++    const std::string TC_BLOCK     = is_v41 ? "calls" : is_v4 ? "tool_calls" : "function_calls";
++    const std::string FC_START     = "<" + TAG + TC_BLOCK + ">";
++    const std::string FC_END       = "</" + TAG + TC_BLOCK + ">";
++    const std::string INVOKE_START = "<" + TAG + "invoke";
++    const std::string INVOKE_END   = "</" + TAG + "invoke>";
++    const std::string PARAM_START  = "<" + TAG + "parameter";
++    const std::string PARAM_END    = "</" + TAG + "parameter>";
+     const std::string GEN_PROMPT   = "<｜Assistant｜>";
+     const std::string TC_SEPARATOR = "\n\n";
+ 
+@@ -109,6 +113,11 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
+     data.generation_prompt = common_chat_template_generation_prompt_impl(
+         tmpl, inputs, adjusted_messages, std::nullopt, additional_context);
+     data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
++    // message starts let the server put context checkpoints at user/tool turns (prefix reuse in tool loops)
++    data.message_delimiters = {
++        { COMMON_CHAT_ROLE_ASSISTANT, GEN_PROMPT },
++        { COMMON_CHAT_ROLE_USER,      "<｜User｜>" },
++    };
+     data.supports_thinking  = true;
+     data.thinking_start_tag = THINK_START;
+     data.thinking_end_tags  = {THINK_END, FC_START};
+diff --git a/models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja b/models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja
+new file mode 100644
+index 000000000..3d94fb9c7
+--- /dev/null
++++ b/models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja
+@@ -0,0 +1,156 @@
++{%- if not add_generation_prompt is defined -%}
++  {%- set add_generation_prompt = false -%}
++{%- endif -%}
++{%- if not thinking is defined -%}
++  {%- if enable_thinking is defined -%}
++    {%- set thinking = enable_thinking -%}
++  {%- else -%}
++    {%- set thinking = true -%}
++  {%- endif -%}
++{%- endif -%}
++{%- if not drop_thinking is defined -%}
++  {%- set drop_thinking = true -%}
++{%- endif -%}
++{%- set dsml_token = '｜DSML｜' -%}
++{#- tool_calls_block_name: V4.1 -#}
++{%- set thinking_start_token = '<think>' -%}
++{%- set thinking_end_token = '</think>' -%}
++{%- set system_token = '<｜System｜>' -%}
++{%- set reasoning_effort_text = '' -%}
++{%- if thinking -%}
++  {%- if not reasoning_effort is defined or reasoning_effort is none -%}
++    {%- set reasoning_budget = 75 -%}
++  {%- elif reasoning_effort is integer and reasoning_effort >= 1 and reasoning_effort <= 100 -%}
++    {%- set reasoning_budget = reasoning_effort -%}
++  {%- elif reasoning_effort == 'low' -%}
++    {%- set reasoning_budget = 50 -%}
++  {%- elif reasoning_effort == 'high' -%}
++    {%- set reasoning_budget = 75 -%}
++  {%- elif reasoning_effort == 'max' -%}
++    {%- set reasoning_budget = 100 -%}
++  {%- else -%}
++    {{- raise_exception('DeepSeek-V4.1 reasoning_effort must be low, high, max, or an integer within [1, 100]') -}}
++  {%- endif -%}
++  {%- set reasoning_effort_text = 'Reasoning Effort: ' + (reasoning_budget | string) + ' (range 1-100, the higher the value, the more thorough the reasoning)\n\n' -%}
++{%- endif -%}
++{%- set response_format_template = '## Response Format:\n\nYou MUST strictly adhere to the following schema to reply:\n' -%}
++{%- set tools_header = '## Tools\n\nYou have access to a set of tools to help answer the user\'s question. You can invoke tools by writing a "<' + dsml_token + ' calls>" block like the following:\n\n<' + dsml_token + ' calls>\n<' + dsml_token + ' invoke name="$TOOL_NAME">\n<' + dsml_token + ' parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</' + dsml_token + ' parameter>\n...\n</' + dsml_token + ' invoke>\n<' + dsml_token + ' invoke name="$TOOL_NAME2">\n...\n</' + dsml_token + ' invoke>\n</' + dsml_token + ' calls>\n\nString parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string="false"`.\n\nIf thinking_mode is enabled (triggered by ' + thinking_start_token + '), you MUST output your complete reasoning inside ' + thinking_start_token + '...' + thinking_end_token + ' BEFORE any tool calls or final response.\n\nOtherwise, output directly after ' + thinking_end_token + ' with tool calls or final response.\n\n### Available Tool Schemas\n\n' -%}
++{%- set tools_footer = '\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n' -%}
++{%- set has_tools = tools is defined and tools -%}
++{%- set first_is_system = messages and messages[0]['role'] == 'system' -%}
++{{- bos_token -}}
++{%- if thinking or first_is_system or has_tools -%}
++  {{- system_token -}}
++  {{- reasoning_effort_text -}}
++  {%- if first_is_system -%}
++    {{- messages[0]['content'] or '' -}}
++  {%- endif -%}
++  {%- if has_tools -%}
++    {%- if first_is_system and messages[0]['content'] -%}
++      {{- '\n\n' -}}
++    {%- endif -%}
++    {{- tools_header -}}
++    {%- for tool in tools -%}
++      {%- if tool['type'] == 'function' -%}
++        {{- tool['function'] | tojson -}}
++        {{- '\n' -}}
++      {%- endif -%}
++    {%- endfor -%}
++    {{- tools_footer -}}
++  {%- endif -%}
++{%- endif -%}
++{%- if response_format is defined -%}
++  {{- '\n\n' + response_format_template + (response_format | tojson) -}}
++{%- endif -%}
++{%- set last_user_idx = namespace(value=-1) -%}
++{%- set state = namespace(in_user=false, has_tool_results=false) -%}
++{%- for message in messages -%}
++  {%- if message['role'] == 'user' or message['role'] == 'developer' or (message['role'] == 'system' and loop.index0 > 0) -%}
++    {%- set last_user_idx.value = loop.index0 -%}
++  {%- endif -%}
++  {%- if message['role'] == 'tool' -%}
++    {%- set state.has_tool_results = true -%}
++  {%- endif -%}
++{%- endfor -%}
++{%- for message in messages -%}
++  {%- if message['role'] == 'system' and loop.index0 == 0 -%}
++  {%- elif message['role'] == 'system' -%}
++    {%- set state.in_user = false -%}
++    {{- system_token + (message['content'] or '') -}}
++  {%- elif message['role'] == 'latest_reminder' -%}
++    {{- '<｜latest_reminder｜>' + (message['content'] or '') -}}
++  {%- elif message['role'] == 'user' or message['role'] == 'developer' -%}
++    {%- if state.in_user -%}
++      {{- '\n\n' -}}
++    {%- else -%}
++      {{- '<｜User｜>' -}}
++      {%- set state.in_user = true -%}
++    {%- endif -%}
++    {{- message['content'] or '' -}}
++  {%- elif message['role'] == 'tool' -%}
++    {%- if state.in_user -%}
++      {{- '\n\n' -}}
++    {%- else -%}
++      {{- '<｜User｜>' -}}
++      {%- set state.in_user = true -%}
++    {%- endif -%}
++    {{- '<tool_result>' + (message['content'] or '') + '</tool_result>' -}}
++  {%- elif message['role'] == 'assistant' -%}
++    {%- set state.in_user = false -%}
++    {{- '<｜Assistant｜>' -}}
++    {%- set is_after_last_user = loop.index0 > last_user_idx.value -%}
++    {%- set keep_reasoning = thinking and ((not drop_thinking) or has_tools or is_after_last_user or state.has_tool_results) -%}
++    {%- if keep_reasoning -%}
++      {{- thinking_start_token -}}
++      {%- if message['reasoning_content'] is defined and message['reasoning_content'] -%}
++        {{- message['reasoning_content'] -}}
++      {%- endif -%}
++      {{- thinking_end_token -}}
++    {%- else -%}
++      {{- thinking_end_token -}}
++    {%- endif -%}
++    {%- if message['content'] is defined and message['content'] -%}
++      {{- message['content'] -}}
++    {%- endif -%}
++    {%- if message['tool_calls'] -%}
++      {{- '\n\n<' + dsml_token + ' calls>\n' -}}
++      {%- for tool in message['tool_calls'] -%}
++        {%- set func = tool['function'] -%}
++        {%- set tool_name = func['name'] -%}
++        {%- if tool['namespace'] is defined and tool['namespace'] -%}
++          {%- set tool_name = tool['namespace'] + '::' + tool_name -%}
++        {%- elif func['namespace'] is defined and func['namespace'] -%}
++          {%- set tool_name = func['namespace'] + '::' + tool_name -%}
++        {%- endif -%}
++        {{- '<' + dsml_token + ' invoke name="' + tool_name + '">\n' -}}
++        {%- set args = func['arguments'] -%}
++        {%- if args is string -%}
++          {%- set args = args | from_json -%}
++        {%- endif -%}
++        {%- for key, val in args.items() -%}
++          {%- if val is string -%}
++            {{- '<' + dsml_token + ' parameter name="' + key + '" string="true">' + val + '</' + dsml_token + ' parameter>\n' -}}
++          {%- else -%}
++            {{- '<' + dsml_token + ' parameter name="' + key + '" string="false">' + (val | tojson) + '</' + dsml_token + ' parameter>\n' -}}
++          {%- endif -%}
++        {%- endfor -%}
++        {%- if not args -%}
++          {{- '\n' -}}
++        {%- endif -%}
++        {{- '</' + dsml_token + ' invoke>\n' -}}
++      {%- endfor -%}
++      {{- '</' + dsml_token + ' calls>' -}}
++    {%- endif -%}
++    {{- eos_token -}}
++  {%- else -%}
++    {{- raise_exception('Unsupported DeepSeek-V4.1 message role: ' + (message['role'] | string)) -}}
++  {%- endif -%}
++{%- endfor -%}
++{%- if add_generation_prompt -%}
++  {{- '<｜Assistant｜>' -}}
++  {%- if thinking -%}
++    {{- thinking_start_token -}}
++  {%- else -%}
++    {{- thinking_end_token -}}
++  {%- endif -%}
++{%- endif -%}
+diff --git a/tests/test-chat.cpp b/tests/test-chat.cpp
+index f27c91e4d..189239768 100644
+--- a/tests/test-chat.cpp
++++ b/tests/test-chat.cpp
+@@ -4270,6 +4270,88 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
+             .run();
+     }
+ 
++    // DeepSeek V4.1 tests - DSML token is followed by a space and the block is named "calls".
++    {
++        auto tst = peg_tester("models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja", detailed_debug);
++
++        tst.test("Hello, world!\nWhat's up?")
++            .enable_thinking(false)
++            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
++            .expect(message_assist)
++            .run();
++
++        tst.test("I'm\nthinking</think>Hello, world!\nWhat's up?")
++            .enable_thinking(true)
++            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
++            .expect(message_assist_thoughts)
++            .run();
++
++        tst.test(
++               "Let me check the time</think>\n\n"
++               "<｜DSML｜ calls>\n"
++               "<｜DSML｜ invoke name=\"get_time\">\n"
++               "<｜DSML｜ parameter name=\"city\" string=\"true\">Tokyo</｜DSML｜ parameter>\n"
++               "</｜DSML｜ invoke>\n"
++               "</｜DSML｜ calls>")
++            .enable_thinking(true)
++            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
++            .tools({ get_time_tool })
++            .expect(message_with_tool_calls_and_reasoning("get_time", R"({"city": "Tokyo"})", "Let me check the time"))
++            .run();
++
++        tst.test(
++               "\n\n"
++               "<｜DSML｜ calls>\n"
++               "<｜DSML｜ invoke name=\"special_function\">\n"
++               "<｜DSML｜ parameter name=\"arg1\" string=\"false\">1</｜DSML｜ parameter>\n"
++               "</｜DSML｜ invoke>\n"
++               "</｜DSML｜ calls>")
++            .enable_thinking(false)
++            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
++            .tools({ special_function_tool })
++            .expect(message_assist_call)
++            .expect_reconstruction()
++            .run();
++
++        tst.test(
++               "Calling both</think>\n\n"
++               "<｜DSML｜ calls>\n"
++               "<｜DSML｜ invoke name=\"get_time\">\n"
++               "<｜DSML｜ parameter name=\"city\" string=\"true\">Paris</｜DSML｜ parameter>\n"
++               "</｜DSML｜ invoke>\n"
++               "<｜DSML｜ invoke name=\"get_weather\">\n"
++               "<｜DSML｜ parameter name=\"city\" string=\"true\">Paris</｜DSML｜ parameter>\n"
++               "</｜DSML｜ invoke>\n"
++               "</｜DSML｜ calls>")
++            .enable_thinking(true)
++            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
++            .parallel_tool_calls(true)
++            .tools({ get_time_tool, get_weather_tool })
++            .expect(message_with_reasoning_content_and_multiple_tool_calls(
++                "Calling both", "",
++                { { "get_time", R"({"city": "Paris"})" }, { "get_weather", R"({"city": "Paris"})" } }))
++            .run();
++
++        tst.test(
++               "Multi-arg call</think>"
++               "Let me call the function.\n\n"
++               "<｜DSML｜ calls>\n"
++               "<｜DSML｜ invoke name=\"magic_int\">\n"
++               "<｜DSML｜ parameter name=\"ref\" string=\"false\">42</｜DSML｜ parameter>\n"
++               "<｜DSML｜ parameter name=\"name\" string=\"true\">foo bar</｜DSML｜ parameter>\n"
++               "</｜DSML｜ invoke>\n"
++               "</｜DSML｜ calls>")
++            .enable_thinking(true)
++            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
++            .tools({ magic_int_tool })
++            .expect_reasoning("Multi-arg call")
++            .expect_content("Let me call the function.")
++            .expect_tool_calls({
++                { "magic_int", R"({"ref": 42, "name": "foo bar"})", {} },
++            })
++            .run();
++    }
++
+     {
+         // The DSML separator belongs to the tool call block, not assistant content.
+         auto tst = peg_tester("models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja", detailed_debug);
+-- 
+2.43.0
+
+
+From 7feecf9db44fc9093918ac15db246034bc0f5696 Mon Sep 17 00:00:00 2001
+From: Nick Mermiges <Mermiges@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 10:07:40 +0000
+Subject: [PATCH 2/2] chat : remove V4.1 turn checkpoint delimiters
+
+Assisted-by: Codex
+---
+ common/parsers/deepseek.cpp | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/common/parsers/deepseek.cpp b/common/parsers/deepseek.cpp
+index 259f9bc98..7c03933b4 100644
+--- a/common/parsers/deepseek.cpp
++++ b/common/parsers/deepseek.cpp
+@@ -113,11 +113,6 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
+     data.generation_prompt = common_chat_template_generation_prompt_impl(
+         tmpl, inputs, adjusted_messages, std::nullopt, additional_context);
+     data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
+-    // message starts let the server put context checkpoints at user/tool turns (prefix reuse in tool loops)
+-    data.message_delimiters = {
+-        { COMMON_CHAT_ROLE_ASSISTANT, GEN_PROMPT },
+-        { COMMON_CHAT_ROLE_USER,      "<｜User｜>" },
+-    };
+     data.supports_thinking  = true;
+     data.thinking_start_tag = THINK_START;
+     data.thinking_end_tags  = {THINK_END, FC_START};
+-- 
+2.43.0
+

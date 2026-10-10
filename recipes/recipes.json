@@ -1,0 +1,200 @@
+{
+  "schema": "pli-recipe-v1",
+  "notes": "Paths are generalized: $MODELS = model directory, $LLAMA_* = llama.cpp checkout. $GPU0..$GPU3 = the four GPU UUIDs in CUDA order; on the test rig $GPU3 is the PCIe Gen4 x8 card. Every speed sample was preceded by scripts/prewarm.sh over all model files inside the same lock hold.",
+  "recipes": [
+    {
+      "id": "glm53-a16-ub2048",
+      "status": "baseline (measured, numerically gated)",
+      "engine": {
+        "repo": "https://github.com/ggml-org/llama.cpp",
+        "commit": "3d65c90d04d337e88f2b1f7f0061f40a5324e662",
+        "patches": []
+      },
+      "model": {
+        "hf_repo": "AesSedai/GLM-5.3-Flash-GGUF",
+        "file": "Q4_K_M, 6 shards, 201,973,194,104 bytes"
+      },
+      "binary": "$LLAMA_GLM/build/bin/llama-server",
+      "argv": [
+        "-m",
+        "$MODELS/glm-5.3-flash-q4_k_m/GLM-5.3-Flash-Q4_K_M-00001-of-00006.gguf",
+        "-ngl",
+        "99",
+        "-ts",
+        "1,1,1,1",
+        "-ot",
+        "^blk\\.(7|8|9|11)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA0,^blk\\.(14|18|19|22)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA1,^blk\\.(31|33|34|35)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA2,^blk\\.(36|38|39|42)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA3,^blk\\.[0-9]+\\.ffn_(gate|up|down)_exps\\.weight$=CPU",
+        "-t",
+        "16",
+        "-tb",
+        "16",
+        "-b",
+        "2048",
+        "-ub",
+        "2048",
+        "-fa",
+        "on",
+        "-ctk",
+        "f16",
+        "-ctv",
+        "f16",
+        "--no-warmup",
+        "-c",
+        "65536",
+        "-np",
+        "1",
+        "--no-context-shift",
+        "--jinja",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8470"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "$GPU0,$GPU1,$GPU2,$GPU3",
+        "LLAMA_OFFLINE": "1"
+      }
+    },
+    {
+      "id": "glm53-a16-ub2048-dflash2-n4",
+      "status": "fastest decode measured; research candidate (drafter licence CC BY-NC-ND 4.0)",
+      "engine": {
+        "repo": "https://github.com/ggml-org/llama.cpp",
+        "commit": "3d65c90d04d337e88f2b1f7f0061f40a5324e662",
+        "patches": [
+          "patches/glm5-next-dflash-layer-inp.patch"
+        ]
+      },
+      "model": {
+        "hf_repo": "AesSedai/GLM-5.3-Flash-GGUF",
+        "file": "Q4_K_M"
+      },
+      "drafter": {
+        "hf_repo": "Anbeeld/GLM-5.3-Flash-DFlash2-GGUF",
+        "file": "GLM-5.3-Flash-DFlash2-Q4_K_M.gguf",
+        "sha256": "f4158ffb805b26c4fe439669c2009908a80ea89e1576ecea4d03eaded18f017c"
+      },
+      "binary": "$LLAMA_GLM_DFLASH/build/bin/llama-server",
+      "argv": [
+        "-m",
+        "$MODELS/glm-5.3-flash-q4_k_m/GLM-5.3-Flash-Q4_K_M-00001-of-00006.gguf",
+        "-ngl",
+        "99",
+        "-ts",
+        "1,1,1,1",
+        "-ot",
+        "^blk\\.(7|8|9|11)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA0,^blk\\.(14|18|19|22)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA1,^blk\\.(31|33|34|35)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA2,^blk\\.(36|38|39|42)\\.ffn_(gate|up|down)_exps\\.weight$=CUDA3,^blk\\.[0-9]+\\.ffn_(gate|up|down)_exps\\.weight$=CPU",
+        "-t",
+        "16",
+        "-tb",
+        "16",
+        "-b",
+        "2048",
+        "-ub",
+        "2048",
+        "-fa",
+        "on",
+        "-ctk",
+        "f16",
+        "-ctv",
+        "f16",
+        "--no-warmup",
+        "--fit",
+        "off",
+        "-c",
+        "32768",
+        "--spec-type",
+        "draft-dflash",
+        "-md",
+        "$MODELS/glm-5.3-flash-dflash2-gguf/GLM-5.3-Flash-DFlash2-Q4_K_M.gguf",
+        "--spec-draft-n-max",
+        "4",
+        "-devd",
+        "CUDA1,CUDA2,CUDA3",
+        "-ngld",
+        "99",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8480",
+        "--jinja",
+        "-np",
+        "1",
+        "--no-context-shift"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "$GPU0,$GPU1,$GPU2,$GPU3",
+        "LLAMA_OFFLINE": "1"
+      }
+    },
+    {
+      "id": "glm53-a16-ub2048-mtp",
+      "status": "incomplete (single warm sample at n=1)",
+      "engine": {
+        "repo": "https://github.com/ggml-org/llama.cpp",
+        "commit": "3d65c90d04d337e88f2b1f7f0061f40a5324e662",
+        "patches": []
+      },
+      "argv_delta_vs_baseline": [
+        "--spec-type",
+        "draft-mtp",
+        "--spec-draft-n-max",
+        "<n>",
+        "--spec-draft-n-min",
+        "<n>"
+      ]
+    },
+    {
+      "id": "deepseek41-4card",
+      "status": "serving recipe (DeepSeek work paused 2026-10-10)",
+      "engine": {
+        "repo": "https://github.com/vcruz305/llama.cpp",
+        "branch": "runtime/deepseek41",
+        "commit": "5210c7c5ed61dddaee6ed476623abf4b63093d16",
+        "local_commits": "chunked indexer (CHUNK3, not published here), patches/c2-dsml-parser.patch, patches/xid31-mul-mat-id-padding.patch"
+      },
+      "model": {
+        "hf_repo": "smalinin/DeepSeek-V4.1-Flash-GGUF",
+        "file": "MXFP4, 10 shards, 507,954,230,958 bytes on disk (includes small checksum files)"
+      },
+      "binary": "$LLAMA_DS41/build/bin/llama-server",
+      "argv": [
+        "-m",
+        "$MODELS/deepseek-v4.1-flash-mxfp4/DeepSeek-V4.1-Flash-MXFP4-00001-of-00010.gguf",
+        "-ngl",
+        "999",
+        "-ts",
+        "19.5,21.5,0,0",
+        "-ot",
+        ".*engram_embd.*=CPU,blk\\.29\\.ffn_.*_exps.*=CUDA1,blk\\.39\\.ffn_.*_exps.*=CUDA0,blk\\.(36|37|38)\\.ffn_.*_exps.*=CUDA2,blk\\.(33|34|35)\\.ffn_.*_exps.*=CUDA3,.*ffn_.*_exps.*=CPU",
+        "-c",
+        "327680",
+        "-np",
+        "1",
+        "-fa",
+        "on",
+        "-fit",
+        "off",
+        "-t",
+        "16",
+        "-tb",
+        "16",
+        "-b",
+        "2048",
+        "-ub",
+        "2048",
+        "-sm",
+        "layer",
+        "-mg",
+        "0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8420"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "$GPU0,$GPU1,$GPU2,$GPU3"
+      }
+    }
+  ]
+}

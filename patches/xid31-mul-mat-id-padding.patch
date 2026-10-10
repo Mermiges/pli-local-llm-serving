@@ -1,0 +1,160 @@
+From 69235060cc2b67b3df45e18cba5fadcff9c93331 Mon Sep 17 00:00:00 2001
+From: Nick Mermiges <Mermiges@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 09:41:17 +0000
+Subject: [PATCH 1/2] tests: MUL_MAT_ID MMQ tail tile past compact src1
+ (DeepSeek V4.1 Xid 31 reproducer)
+
+Fixed routing and sizes put the quantized src1 of MUL_MAT_ID exactly at the end of a fresh
+2 MiB VMM pool granule, so an unpadded src1 makes the last expert tail tile read unmapped memory.
+Run alone: test-backend-ops -o MUL_MAT_ID -p y_tail.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tests/test-backend-ops.cpp | 60 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 60 insertions(+)
+
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 2deb90f6a..d1aab3dc4 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -5054,6 +5054,61 @@ struct test_mul_mat_id : public test_case {
+     }
+ };
+ 
++// GGML_OP_MUL_MAT_ID, MMQ tail tile of the last expert.
++// MMQ loads whole J-column src1 tiles, so the last tile of the last expert reads past the compact quantized src1.
++// Fixed routing (token t uses experts t*n_used .. t*n_used + 3, mod 1000) leaves 3 tokens on expert 999, and the
++// sizes make the pool allocations 14336 + 14336 + 4096 + 2064384 bytes = exactly one 2 MiB VMM granule, so a src1
++// without tail padding ends on unmapped memory and the 128-column tile faults (Xid 31) instead of reading stale
++// pool bytes. Needs a fresh pool: run it alone, e.g. test-backend-ops -o MUL_MAT_ID -p y_tail.
++struct test_mul_mat_id_y_tail : public test_case {
++    static constexpr int     n_mats = 1000;
++    static constexpr int     n_used = 4;
++    static constexpr int64_t m      = 128;
++    static constexpr int64_t n      = 896;
++    static constexpr int64_t k      = 512;
++    const bool b; // broadcast b matrix
++
++    std::string vars() override {
++        return "y_tail," + VARS_TO_STR1(b);
++    }
++
++    double max_nmse_err() override {
++        return 5e-4;
++    }
++
++    test_mul_mat_id_y_tail(bool b) : b(b) {}
++
++    ggml_tensor * build_graph(ggml_context * ctx) override {
++        ggml_tensor * as = ggml_new_tensor_3d(ctx, GGML_TYPE_MXFP4, k, m, n_mats);
++        ggml_set_name(as, "as");
++
++        ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n);
++        ggml_set_name(ids, "ids");
++
++        ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, this->b ? 1 : n_used, n);
++        ggml_set_name(b, "b");
++
++        ggml_tensor * out = ggml_mul_mat_id(ctx, as, b, ids);
++        ggml_set_name(out, "out");
++
++        return out;
++    }
++
++    void initialize_tensors(ggml_context * ctx) override {
++        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
++            if (t->type != GGML_TYPE_I32) {
++                init_tensor_uniform(t);
++                continue;
++            }
++            std::vector<int32_t> data(n_used*n);
++            for (size_t i = 0; i < data.size(); i++) {
++                data[i] = i % n_mats;
++            }
++            ggml_backend_tensor_set(t, data.data(), 0, ggml_nbytes(t));
++        }
++    }
++};
++
+ // GGML_OP_MUL_MAT_ID + GGML_OP_ADD or GGML_OP_MUL
+ struct test_mul_mat_id_fusion : public test_case {
+     const ggml_type type_a;
+@@ -9975,6 +10030,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+     }
+     test_cases.emplace_back(new test_mul_mat_id_fusion(GGML_TYPE_F16, GGML_TYPE_F32, 16, 16, false, 32, 32, 32, 3));
+ 
++    // DeepSeek V4.1 Xid 31: MMQ tail tile past the compact src1 of MUL_MAT_ID
++    for (bool b : {true, false}) {
++        test_cases.emplace_back(new test_mul_mat_id_y_tail(b));
++    }
++
+     // gpt-oss issue with Vulkan mmq_id
+     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_MXFP4, GGML_TYPE_F32, 32, 2, false, 2880, 32, 2880));
+     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_0, GGML_TYPE_F32, 32, 2, false, 2880, 32, 2880));
+-- 
+2.43.0
+
+
+From 7cd3016762d93aa877d8a48c1402d7755fe4ebdb Mon Sep 17 00:00:00 2001
+From: Nick Mermiges <Mermiges@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 09:41:29 +0000
+Subject: [PATCH 2/2] CUDA: pad MUL_MAT_ID MMQ src1 for the widest selectable
+ tile (fix DeepSeek V4.1 Xid 31)
+
+The ids path sized the src1 tail padding from ne11, which is 1 (broadcast gate/up) or
+n_expert_used (down), so ggml_cuda_mmq_get_J_max returned 0 and no padding was added. The tile
+width J is chosen against the token count, and the last tile of the last expert loads J full
+columns, reading up to J-1 columns (18 KiB at J=128) past the buffer. When that buffer ends a
+fresh VMM pool high-water mark the read hits unmapped memory: Xid 31 FAULT_PDE at a 2 MiB
+boundary on the expert card, request 3 of legal FULL O1. Regression from the MMQ config
+refactor 6eddde06a, which replaced get_mmq_x_max_host(cc) with get_J_max(..., ne11).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-cuda/mmq.cu  | 5 ++++-
+ ggml/src/ggml-cuda/mmq.cuh | 5 ++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index 9b6038adf..45eb9adb4 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -202,8 +202,11 @@ void ggml_cuda_mul_mat_q(
+         CUDA_CHECK(cudaGetLastError());
+     }
+ 
++    // MMQ loads whole J-column src1 tiles and J is picked against ncols_opt (tokens), not ne11 (1 or n_expert_used),
++    // so the last tile of the last expert reads up to J-1 columns past the compact src1. Pad for the widest tile:
++    // sizing this from ne11 gave zero padding and the read ran off the end of the VMM pool (Xid 31).
+     const size_t nbytes_src1_q8_1 = ne12*n_expert_used*ne10_padded * y_block_size/y_values_per_block +
+-        ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, ne11) * sizeof(block_q8_1_mmq);
++        ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, MMQ_J_SELECT_MAX) * sizeof(block_q8_1_mmq);
+     ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
+     ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
+     if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
+diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
+index 24afedd14..e2819e51c 100644
+--- a/ggml/src/ggml-cuda/mmq.cuh
++++ b/ggml/src/ggml-cuda/mmq.cuh
+@@ -363,6 +363,9 @@ static constexpr __device__ int ggml_cuda_mmq_get_sram_stride(ggml_type type, in
+     return ggml_cuda_mmq_get_sram_stride(ggml_cuda_mmq_get_sram_layout(type, J, fallback));
+ }
+ 
++// Widest tile in the src1/dst column direction that mul_mat_q_switch_J may select.
++static constexpr int MMQ_J_SELECT_MAX = 128;
++
+ static __host__ int ggml_cuda_mmq_get_J_max(const ggml_type type, const bool fallback, const int cc, const int64_t ne11) {
+     int ret = std::min(ne11, int64_t(512));
+     ret -= ret % 8;
+@@ -1477,7 +1480,7 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args,
+     int J_best        = 0;
+     int ntiles_J_best = INT_MAX;
+ 
+-    for (int J = 8; J <= 128 && ntiles_J_best > 1; J += 8) {
++    for (int J = 8; J <= MMQ_J_SELECT_MAX && ntiles_J_best > 1; J += 8) {
+         const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
+         if (config.type == GGML_TYPE_COUNT) {
+             continue;
+-- 
+2.43.0
+

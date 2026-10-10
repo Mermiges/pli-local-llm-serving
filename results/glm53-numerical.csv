@@ -1,0 +1,12 @@
+candidate,reference,ubatch_candidate,ubatch_reference,scored_tokens,mean_kld,same_top1_pct,ppl_candidate,ppl_reference,ppl_delta_pct,gate,result
+A16 placement (llama.cpp 3d65c90d0),all routed experts in RAM (same build),512,512,8190,0.000017,99.963,2.855923,2.8559,0.00,ub>=64: KLD<=0.005 top1>=98% PPL +-0.5%,PASS
+A16 placement,all routed experts in RAM,2048,512,8190,0.012230,96.410,2.860921,2.8559,+0.18,cross-ubatch comparison (diagnostic),"KLD/top1 above fixed thresholds; PPL within 0.5%. Ubatch change alone moves KLD about 0.01, so this gate was replaced by the same-ub gate below"
+A16 placement,all routed experts in RAM,2048,2048,8190,0.001431,99.158,2.861159,2.860488,+0.02,ub>=64 same-ub,PASS
+A16 + DFlash2 build (target only; drafter inactive),published B2 reference,2048,,8190,,,2.8609,2.8559,+0.18,PPL +-0.5%,PASS
+neurall/llama.cpp cache ON,all routed experts in RAM (llama.cpp 3d65c90d0),8,512,8190,0.0111,96.65,,2.8559,+0.54,ub>=64 fixed gate (applied before the small-ub rule),FAIL (see small-ub floor)
+neurall/llama.cpp cache OFF,all routed experts in RAM (llama.cpp 3d65c90d0),8,512,8190,0.0115,,,,,small-ub noise floor measurement,"defines floor; cache ON was not worse than OFF"
+club v1.6 cache ON,club v1.6 cache OFF (same build),8,8,8190,0.010214,96.618,2.864015,2.8673,-0.11,small-ub floor: KLD<=F=0.011744; top1>=95.252%; PPL +-0.5%,PASS (cache hit rate 71-76%)
+club v1.6 serving (cache bypassed above 8 tokens),all routed experts in RAM (llama.cpp 3d65c90d0),512,512,8190,0.012201,96.557,2.870447,2.8559,+0.51,ub>=64 fixed gate,FAIL
+GSQ-RCO 3.5-bit GGUF,GLM-5.3-Flash Q4_K_M (same engine),512,512,8190,0.105732,90.537,3.021915,2.854946,+5.81 (vs 2.8559),quality screen,FAIL
+EXL3 3.05bpw (ExLlamaV3),Q4_K_M PPL (different quant/engine; informative only),,,8190,,,3.022792,2.8559,+5.84,informative,quality loss
+EXL3 4.05bpw (ExLlamaV3),Q4_K_M PPL (different quant/engine; informative only),,,8190,,,2.841710,2.8559,-0.50,informative,close to Q4_K_M

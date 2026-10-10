@@ -1,0 +1,14 @@
+build,layout,ubatch,threads,ctx,prompt_tokens,output_tokens,page_cache,samples,statistic,prefill_tok_s,decode_tok_s,status,notes
+CHUNK3 (vcruz305 fork + chunked indexer),4-card -ts 19.5;21.5;0;0 + 8 GPU expert layers,2048,16,327680,2000,96,uncontrolled,1,single,111.632142,11.514878,baseline,
+CHUNK3,same,2048,16,327680,30000,96,uncontrolled,1,single,107.625653,10.422715,baseline,
+CHUNK3,same,2048,16,327680,64000,96,uncontrolled,1,single,87.997085,10.760795,baseline,
+CHUNK3,same,2048,16,327680,2000,96,uncontrolled,3,median,,11.214079,control,default mmap loading
+CHUNK3,same,2048,16,327680,30000,96,uncontrolled,3,median,,10.236334,control,default mmap loading
+CHUNK3 + --load-mode none --no-host --no-repack (anonymous THP),same,2048,16,327680,2000,96,uncontrolled,3,median,,15.824888,rejected as default,"decode +41%, but startup 37 s -> 330 s and uncached 2k prefill 17.9 s -> 30.9 s"
+CHUNK3 + --load-mode none --no-host --no-repack (anonymous THP),same,2048,16,327680,30000,96,uncontrolled,3,median,,13.697648,rejected as default,"decode +34%, uncached 30k prefill 277 s -> 381 s"
+CHUNK3 + Xid 31 fix (run fix-a1),same,2048,16,327680,2000 / 30000,64,uncontrolled,1,single,111.25 / 112.31,15.81 / 13.42,fixed,
+CHUNK3 + Xid 31 fix (run fix-a2),same,2048,16,327680,2000 / 30000,64,uncontrolled,1,single,117.26 / 111.98,15.77 / 13.45,fixed,
+CHUNK3 unfixed (run base-a2),same,2048,16,327680,2000 / 30000,64,uncontrolled,1,single,115.52 / 111.86,15.63 / 13.92,control,
+CHUNK3 unfixed (run base-a1),same,2048,16,327680,2000 / 30000,64,uncontrolled,1,single,63.25 / 73.82,10.86 / 10.07,excluded outlier,"about 40% slower on every metric in the same hold; consistent with model pages evicted by the other model"
+CHUNK3 dense sparse-attention path,same,2048,16,327680,250003,64,uncontrolled,2+,median,,6.873,control,"control-first order"
+CHUNK3 + compact sparse attention (DEPTH),same,2048,16,327680,250003,64,uncontrolled,2+,median,,10.384,experimental,"+51% vs dense in control-first order; +43% (8.486 vs 5.921) in reversed order; output token IDs identical"
