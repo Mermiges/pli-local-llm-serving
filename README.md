@@ -52,15 +52,53 @@ llama-server -m $MODELS/glm-5.3-flash-q4_k_m/GLM-5.3-Flash-Q4_K_M-00001-of-00006
   per card. The other 26 routed layers stay in RAM. The `-ot` GPU rules must come before the
   CPU catch-all, and `--n-cpu-moe` must not be used with them (it takes precedence).
 - **ubatch 2048** roughly triples prefill against ubatch 512 (56 to about 175 tok/s).
-- **16 threads** = one per physical core. 8, 12 and 24 threads all decoded slower in single samples (12.0, 12.7 and 12.2 vs 16.9 tok/s).
+- **16 threads** = one per physical core. In cool single samples at 2k, 8, 12, 24 and 32 threads
+  decoded at 14.3, 15.9, 17.2 and 15.1 tok/s against 17.5 for 16.
 - **F16 KV.** We did not accept q8_0 KV.
 
-Warm medians (three fresh processes each, 400 greedy output tokens):
+Warm medians with cool memory (400 greedy output tokens; see "Memory temperature" below):
 
-| Prompt | Prefill tok/s | Decode tok/s |
-|---:|---:|---:|
-| 2,000 tokens | 184.09 | 17.49 |
-| 30,000 tokens | 169.48 | 12.42 |
+| Prompt | Prefill tok/s | Decode tok/s | Processes |
+|---:|---:|---:|---:|
+| 2,000 tokens | 186.59 | 17.48 | 3 |
+| 30,000 tokens | 178.18 | 17.18 | 3 |
+| 64,000 tokens | 159.58 | 16.59 | 2 |
+
+> **Correction (2026-10-11).** The first version of this page gave 169.48 / 12.42 tok/s at
+> 30k. That run was very likely slowed by hot memory (see below); the same configuration
+> measured cool gives 178.18 / 17.18.
+
+### GLM-5.3-Flash: add the built-in MTP head for prompts up to ~30k tokens
+
+Add `--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-n-min 1` to the A16 command.
+Script: [`recipes/glm53-a16-ub2048-mtp2.sh`](recipes/glm53-a16-ub2048-mtp2.sh).
+
+| Prompt | Prefill tok/s | Decode tok/s | vs no drafter |
+|---:|---:|---:|---|
+| 2,000 tokens | 168.94 | 18.58 | decode +6%, prefill −9% |
+| 30,000 tokens | 174.84 | 18.68 | decode +9%, prefill −2% |
+| 64,000 tokens | 149.65 | 15.72 | decode −5%, prefill −6% |
+
+We compared draft lengths 1, 2 and 3 (three processes per cell); n = 2 was best at 30k. **At 64k
+the MTP head makes GLM slower**, so turn it off for long prompts.
+
+### GLM-5.3-Flash: 292k-token context
+
+The A16 configuration cannot allocate a 292k context: the ubatch-2048 compute buffer needs about
+4.5 GB on the first card. With our 1,536 MiB per-card reserve, the largest placement that fits is
+14 routed layers on the GPUs at ubatch 1024 (`-ub 1024`, `-c 292096`, and the `-ot` list in
+[`recipes/glm53-long-context-a14-ub1024.sh`](recipes/glm53-long-context-a14-ub1024.sh)). Prefill
+drops to about 100 tok/s; decode stays at 16.5–16.8 tok/s (18.2–20.1 with MTP n = 2). It
+processed a 251,136-token prompt and found a planted fact in 129k- and 260k-token prompts.
+
+### Memory temperature
+
+On this machine the DDR4 slows down once its hottest DIMMs pass about 70 °C. The A16 baseline
+at 2k decoded at 12.66 tok/s with the DIMMs at 73–75 °C and at 17.41 tok/s an hour later at
+61–64 °C, same configuration and CPU clock (−28% decode, −10% prefill). Long prefills heat the
+DIMMs enough to trigger it. If your MoE decode speed drops without a configuration change,
+check DIMM temperatures (`ipmitool sdr type Temperature`). We now accept a speed sample only if
+the hottest DIMM is ≤ 64 °C at the start and ≤ 70 °C at the end.
 
 ### GLM-5.3-Flash: A16 + DFlash2 drafter (fastest decode we measured)
 
@@ -76,13 +114,18 @@ change is proposed upstream as ggml-org/llama.cpp PR #30268 for issue #30093). F
   --spec-draft-n-max 4 -devd CUDA1,CUDA2,CUDA3 -ngld 99
 ```
 
-| Prompt | Prefill tok/s | Decode tok/s | Draft acceptance |
+| Prompt | Prefill tok/s | Decode tok/s | Processes |
 |---:|---:|---:|---:|
-| 2,000 tokens | 156.90 | 18.67 | 59.7% |
-| 30,000 tokens | 173.36 | 20.33 | 66.7–71.4% |
+| 2,000 tokens | 157.18 | 18.62 | 1 |
+| 30,000 tokens | 173.76 | 20.43 | 3 |
 
-Context is 32,768 here because 65,536 plus the drafter did not leave our 1,536 MiB per-card
-safety reserve. `-devd` must include the card holding the target's output head (CUDA3 here),
+That is about +19% decode against the cool baseline at 30k (our first version said +64%,
+against a baseline that was slowed by hot memory). The three 30k runs decoded at 20.57, 20.43
+and 18.68 tok/s, and the slowest one produced different greedy tokens with lower draft
+acceptance, so outputs are not repeatable run to run.
+
+Context is 32,768 here because 65,536 plus the drafter does not leave our 1,536 MiB per-card
+safety reserve, so DFlash2 cannot serve long documents on this rig. `-devd` must include the card holding the target's output head (CUDA3 here),
 because the drafter reuses it. The drafter is licensed CC BY-NC-ND 4.0 (non-commercial), so we
 treat this configuration as research-only.
 
@@ -154,6 +197,13 @@ computes all routed experts on the CPU:
   KLD(ON, OFF) ≤ F, top-1 within one point of OFF, perplexity within ±0.5%, and logged cache
   hits, where F is the OFF build's own KLD against the CPU reference.
 
+Limit: `llama-perplexity` runs large batches, and at ubatch ≥ 32 llama.cpp copies CPU-resident
+expert weights to the GPU for the multiply. The placement gate therefore checks the batched
+(prefill) path; single-token decode is checked only by end-to-end task results.
+
+**Cool memory.** Since 2026-10-11 a speed sample counts only if the hottest DIMM is ≤ 64 °C at
+the start and ≤ 70 °C at the end (see "Memory temperature").
+
 **Prompt cache.** On the DeepSeek fork, a long request answered from a warm prompt cache (29k
 of 31k tokens reused) produced different text from the same request processed cold, on two
 different builds alike. We therefore compare builds cold-to-cold, or warm-to-warm with the
@@ -181,6 +231,10 @@ same request history.
 | glm-flash-lite, EXL3 3.05 bpw, one GPU | 2k prefill 230, decode 13.3 tok/s; PPL +5.8%; two fresh runs diverge at token 86 | Quality loss; not repeatable |
 | ExLlamaV3 4.05 bpw, four GPUs | 2k prefill 90–151, decode 8.9 tok/s; PPL −0.5%; runs diverge at token 41 | Slower than llama.cpp; not repeatable |
 | GSQ-RCO 3.5-bit GGUF | PPL +5.8%, KLD 0.106, top-1 90.5% | Quality loss |
+| GLM EXL3 2.05 bpw, tensor parallel on all four GPUs | 950 / 69 tok/s prefill / decode at 2k and 30k; PPL +12.7%; failed our first drafting task | Quality loss; no larger quant fits for tensor parallel |
+| ggml-org/llama.cpp PR #29963 (GLM) | no gain at equal placement; does not fit A16 with our reserve | No benefit on this rig |
+| MTP n = 3, thread pinning / NUMA modes | n = 3 slower than n = 2 at 30k; pinning no change | No benefit |
+| GLM-5.3-Flash as a legal drafting model | drafting fidelity check failed with and without MTP (stated figures or quotations not in the record); tools 6/6, long-document questions 7/7 | Not used for drafting |
 | DeepSeek server "append fast path" (ours) | cached and cold outputs diverge at token 13 | Changes outputs |
 | DeepSeek turn-start message delimiters (ours) | restored checkpoint differs from fresh prefill | Changes outputs |
 | DeepSeek speculative decoding (DSpark drafter) | 8/8 strict token-ID comparisons failed | Changes outputs; no admitted gain |

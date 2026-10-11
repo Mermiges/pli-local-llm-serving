@@ -10,3 +10,6 @@ club v1.6 serving (cache bypassed above 8 tokens),all routed experts in RAM (lla
 GSQ-RCO 3.5-bit GGUF,GLM-5.3-Flash Q4_K_M (same engine),512,512,8190,0.105732,90.537,3.021915,2.854946,+5.81 (vs 2.8559),quality screen,FAIL
 EXL3 3.05bpw (ExLlamaV3),Q4_K_M PPL (different quant/engine; informative only),,,8190,,,3.022792,2.8559,+5.84,informative,quality loss
 EXL3 4.05bpw (ExLlamaV3),Q4_K_M PPL (different quant/engine; informative only),,,8190,,,2.841710,2.8559,-0.50,informative,close to Q4_K_M
+A14 placement (long-context config),all routed experts in RAM (same build),1024,1024,8190,0.0,100.0,2.858379,2.857759,+0.02,ub>=64: KLD<=0.005 top1>=98% PPL +-0.5%,"PASS; KLD exactly 0 because at ubatch>=32 CPU-resident experts are multiplied on the GPU, so this checks the batched path only"
+ubatch 1024 scheduling change (A14),published reference,1024,512,8190,,,2.858379,2.8559,+0.09,ubatch change: PPL +-0.5%,PASS
+llama.cpp PR #29963 at A12,all routed experts in RAM (stock build; stock A12 scored identically),2048,2048,8190,0.001428,99.158,2.860921,2.8612,-0.01,ub>=64: KLD<=0.005 top1>=98% PPL +-0.5%,PASS (no speed gain; not adopted)

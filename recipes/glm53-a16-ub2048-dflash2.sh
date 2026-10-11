@@ -3,9 +3,12 @@
 # same A16 placement as glm53-a16-ub2048.sh, draft n_max 4. Context is 32768, not 65536:
 # with the drafter loaded, 65536 did not leave our 1536 MiB per-card reserve.
 #
-# Measured (warm, median of 3 fresh processes, 400 greedy tokens):
-#   2k prompt:  prefill 156.90 tok/s, decode 18.67 tok/s, draft acceptance 59.7%
-#   30k prompt: prefill 173.36 tok/s, decode 20.33 tok/s, draft acceptance 66.7-71.4%
+# Measured (warm, 400 greedy tokens):
+#   2k prompt:  prefill 156.90 tok/s, decode 18.67 tok/s, draft acceptance 59.7% (median of 3, 2026-10-10)
+#   30k prompt: prefill 173.76 tok/s, decode 20.43 tok/s (median of 3, cool DIMMs, 2026-10-11)
+#   That is about +19% decode vs the cool A16 baseline at 30k (17.18). The 30k runs decoded at
+#   20.57 / 20.43 / 18.68 tok/s and the slowest produced different greedy tokens: outputs are not
+#   repeatable run to run. Does not fit ctx 65536 with a 1,536 MiB per-card reserve.
 # Target-only PPL on the same build (drafter inactive): 2.8609 (+0.18% vs 2.8559 reference).
 #
 # Engine: ggml-org/llama.cpp at 3d65c90d04d337e88f2b1f7f0061f40a5324e662 plus the

@@ -3,9 +3,11 @@
 # "A16" placement: 16 whole routed-expert layers on the GPUs (4 per card), the other
 # 26 routed layers in system RAM. Batch/ubatch 2048, 16 threads, F16 KV, ctx 65536.
 #
-# Measured (warm, median of 3 fresh processes, 400 greedy tokens):
-#   2k prompt:  prefill 184.09 tok/s, decode 17.49 tok/s
-#   30k prompt: prefill 169.48 tok/s, decode 12.42 tok/s
+# Measured (warm, cool DIMMs, medians of fresh processes, 400 greedy tokens), 2026-10-11:
+#   2k prompt:  prefill 186.59 tok/s, decode 17.48 tok/s (3)
+#   30k prompt: prefill 178.18 tok/s, decode 17.18 tok/s (3)
+#   64k prompt: prefill 159.58 tok/s, decode 16.59 tok/s (2; use -c 66560)
+# Hot DIMMs (>~70 C) cost ~28% decode on this machine; see README "Memory temperature".
 # Numerical gate vs all-experts-on-CPU at the same ubatch (2x8192 tokens):
 #   mean KLD 0.001431, same top-1 99.158%, PPL 2.861159 vs 2.860488.
 #
